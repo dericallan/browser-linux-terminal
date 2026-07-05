@@ -143,8 +143,19 @@ function bootVM() {
     disable_keyboard: true,
   });
 
+  var promptFixed = false;
+  var recentOutput = "";
+
   emulator.add_listener("serial0-output-byte", function (byte) {
     term.write(new Uint8Array([byte]));
+
+    if (!promptFixed) {
+      recentOutput = (recentOutput + String.fromCharCode(byte)).slice(-16);
+      if (recentOutput.indexOf("~% ") !== -1) {
+        promptFixed = true;
+        emulator.serial0_send("export PS1='\\w$ ' && clear\n");
+      }
+    }
   });
 
   emulator.add_listener("emulator-ready", function () {
