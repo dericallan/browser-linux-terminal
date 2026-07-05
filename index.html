@@ -70,6 +70,15 @@
   #titlebar .dot.y { background: #ffbd2e; }
   #titlebar .dot.g { background: #27c93f; }
   #titlebar .name { margin-left: 6px; }
+  #titlebar .watch-badge {
+    margin-left: 10px;
+    background: rgba(233, 84, 32, 0.15);
+    color: #ffb37a;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+  }
   #titlebar .status { margin-left: auto; }
   #titlebar .win-btn {
     margin-left: 12px;
@@ -100,6 +109,7 @@
     text-align: center;
   }
   footer a { color: #58a6ff; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
@@ -118,6 +128,7 @@
     <button class="dot y" id="dot-minimize" title="Minimize"></button>
     <button class="dot g" id="dot-fullscreen" title="Toggle fullscreen"></button>
     <span class="name" id="username-label">guest@browser-linux</span>
+    <span class="watch-badge hidden" id="watch-badge">👁️ Mentor watching</span>
     <span class="status" id="status">booting&hellip;</span>
     <button class="win-btn" id="fullscreen-btn" title="Toggle fullscreen focus mode">⛶ Fullscreen</button>
     <button class="win-btn" id="restart" title="Reboot the virtual machine">Restart</button>
@@ -132,6 +143,10 @@
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 <script src="vendor/libv86.js"></script>
+<!-- PeerJS: WebRTC peer-to-peer connections (mentor live-watch/mirroring),
+     signaled through PeerJS's free public broker. Best-effort only — not a
+     production-grade signaling service, per PeerJS's own docs. -->
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 "use strict";
 
@@ -142,7 +157,16 @@ var rawUser = new URLSearchParams(window.location.search).get("user") || "guest"
 var username = rawUser.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 24) || "guest";
 document.getElementById("username-label").textContent = username + "@terminal";
 
+// ?watchable=1 — this session registers itself so a mentor can find and
+// mirror it live. ?watch=<username> — this page is a *viewer*: instead of
+// booting its own VM, it connects to that username's already-running,
+// watchable session and mirrors it in real time.
+var isWatchable = new URLSearchParams(window.location.search).get("watchable") === "1";
+var watchTarget = new URLSearchParams(window.location.search).get("watch");
+watchTarget = watchTarget ? watchTarget.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 24) : null;
+
 var statusEl = document.getElementById("status");
+var watchBadgeEl = document.getElementById("watch-badge");
 var term = new Terminal({
   cursorBlink: true,
   fontSize: 14,
@@ -156,6 +180,111 @@ fitAddon.fit();
 window.addEventListener("resize", function () { fitAddon.fit(); });
 
 var emulator = null;
+
+/* ==========================================================================
+   Live mirroring (mentor "watch" mode) over WebRTC via PeerJS.
+   Host side (a normal, watchable session): registers as peer "jll-<user>"
+   and streams its serial output to any mentor that connects, applying
+   whatever the mentor types back into the VM.
+   ========================================================================== */
+var peer = null;
+var activeConnections = [];
+var outputBuffer = [];
+var flushScheduled = false;
+
+function queueOutputByte(byte) {
+  if (activeConnections.length === 0) return;
+  outputBuffer.push(byte);
+  if (!flushScheduled) {
+    flushScheduled = true;
+    setTimeout(flushOutputBuffer, 10);
+  }
+}
+
+function flushOutputBuffer() {
+  flushScheduled = false;
+  if (outputBuffer.length === 0) return;
+  var chunk = new Uint8Array(outputBuffer);
+  outputBuffer = [];
+  activeConnections.forEach(function (conn) {
+    if (conn.open) conn.send(chunk);
+  });
+}
+
+function setWatchBadge(visible) {
+  watchBadgeEl.classList.toggle("hidden", !visible);
+}
+
+function setupHostPeer() {
+  if (typeof Peer === "undefined") return;
+  peer = new Peer("jll-" + username);
+
+  peer.on("connection", function (conn) {
+    conn.on("open", function () {
+      activeConnections.push(conn);
+      setWatchBadge(true);
+    });
+    conn.on("data", function (data) {
+      if (emulator) emulator.serial0_send(data);
+    });
+    conn.on("close", function () {
+      activeConnections = activeConnections.filter(function (c) { return c !== conn; });
+      setWatchBadge(activeConnections.length > 0);
+    });
+  });
+
+  peer.on("error", function (err) {
+    // Best-effort feature: if the free signaling broker is unavailable or
+    // this ID is somehow already taken, mirroring just won't be offered —
+    // the terminal itself keeps working normally either way.
+    console.warn("[Junior Linux Lab] Live-watch unavailable:", err && err.type ? err.type : err);
+  });
+}
+
+/* ---------------- Viewer mode ---------------- */
+function bootAsViewer(targetUsername) {
+  document.getElementById("username-label").textContent = "watching " + targetUsername + "@terminal";
+  statusEl.textContent = "connecting…";
+  document.getElementById("restart").textContent = "Reconnect";
+
+  var viewerPeer = new Peer();
+  var conn = null;
+
+  viewerPeer.on("open", function () {
+    conn = viewerPeer.connect("jll-" + targetUsername, { reliable: true });
+
+    conn.on("open", function () {
+      statusEl.textContent = "watching (live)";
+      term.reset();
+      term.write("Connected — mirroring " + targetUsername + "'s terminal live.\r\n\r\n");
+    });
+    conn.on("data", function (data) {
+      term.write(data instanceof Uint8Array ? data : new Uint8Array(data));
+    });
+    conn.on("close", function () {
+      statusEl.textContent = "disconnected";
+      term.write("\r\n\r\n[Session ended]\r\n");
+    });
+    conn.on("error", function (e) {
+      statusEl.textContent = "error";
+      term.write("\r\nConnection error: " + (e && e.message ? e.message : e) + "\r\n");
+    });
+  });
+
+  viewerPeer.on("error", function (err) {
+    statusEl.textContent = "offline";
+    term.write(
+      targetUsername + " isn't currently reachable — they may not have a terminal tab open right now, " +
+      "or the connection couldn't be established. Try again once they're online.\r\n"
+    );
+  });
+
+  term.onData(function (data) {
+    if (conn && conn.open) conn.send(data);
+  });
+
+  return viewerPeer;
+}
 
 function bootVM() {
   term.reset();
@@ -186,6 +315,7 @@ function bootVM() {
 
   emulator.add_listener("serial0-output-byte", function (byte) {
     term.write(new Uint8Array([byte]));
+    queueOutputByte(byte);
 
     if (!promptFixed) {
       recentOutput = (recentOutput + String.fromCharCode(byte)).slice(-16);
@@ -212,7 +342,14 @@ function bootVM() {
   });
 }
 
+var viewerPeerInstance = null;
+
 function restartVM() {
+  if (watchTarget) {
+    if (viewerPeerInstance) viewerPeerInstance.destroy();
+    viewerPeerInstance = bootAsViewer(watchTarget);
+    return;
+  }
   if (emulator) {
     emulator.stop();
     emulator.destroy();
@@ -263,7 +400,12 @@ document.getElementById("dot-minimize").addEventListener("click", function () {
   }
 });
 
-bootVM();
+if (watchTarget) {
+  viewerPeerInstance = bootAsViewer(watchTarget);
+} else {
+  bootVM();
+  if (isWatchable) setupHostPeer();
+}
 </script>
 </body>
 </html>
