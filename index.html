@@ -117,7 +117,7 @@
 // both in the DOM and inline in a shell command sent to the VM.
 var rawUser = new URLSearchParams(window.location.search).get("user") || "guest";
 var username = rawUser.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 24) || "guest";
-document.getElementById("username-label").textContent = username + "@browser-linux";
+document.getElementById("username-label").textContent = username + "@terminal";
 
 var statusEl = document.getElementById("status");
 var term = new Terminal({
@@ -160,7 +160,7 @@ function bootVM() {
       recentOutput = (recentOutput + String.fromCharCode(byte)).slice(-16);
       if (recentOutput.indexOf("~% ") !== -1) {
         promptFixed = true;
-        emulator.serial0_send("export PS1='" + username + "@browser-linux:\\w$ ' && clear\n");
+        emulator.serial0_send("export PS1='$ ' && clear\n");
       }
     }
   });
