@@ -95,7 +95,7 @@
 <div id="wrap">
   <div id="titlebar">
     <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-    <span class="name">guest@browser-linux</span>
+    <span class="name" id="username-label">guest@browser-linux</span>
     <span class="status" id="status">booting&hellip;</span>
     <button id="restart" title="Reboot the virtual machine">Restart</button>
   </div>
@@ -111,6 +111,13 @@
 <script src="vendor/libv86.js"></script>
 <script>
 "use strict";
+
+// Username can be customized via ?user=<name> (e.g. when embedded in an
+// iframe from another site). Restricted to a safe charset since it's used
+// both in the DOM and inline in a shell command sent to the VM.
+var rawUser = new URLSearchParams(window.location.search).get("user") || "guest";
+var username = rawUser.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 24) || "guest";
+document.getElementById("username-label").textContent = username + "@browser-linux";
 
 var statusEl = document.getElementById("status");
 var term = new Terminal({
@@ -153,7 +160,7 @@ function bootVM() {
       recentOutput = (recentOutput + String.fromCharCode(byte)).slice(-16);
       if (recentOutput.indexOf("~% ") !== -1) {
         promptFixed = true;
-        emulator.serial0_send("export PS1='\\w$ ' && clear\n");
+        emulator.serial0_send("export PS1='" + username + "@browser-linux:\\w$ ' && clear\n");
       }
     }
   });
