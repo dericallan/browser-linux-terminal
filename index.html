@@ -42,7 +42,18 @@
     border-radius: 8px;
     overflow: hidden;
     box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    display: flex;
+    flex-direction: column;
   }
+  #wrap:fullscreen,
+  #wrap:-webkit-full-screen {
+    max-width: 100%;
+    width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+    border: none;
+  }
+  #wrap.minimized #terminal { display: none; }
   #titlebar {
     display: flex;
     align-items: center;
@@ -52,14 +63,15 @@
     border-bottom: 1px solid #30363d;
     font-size: 0.8rem;
     color: #8b949e;
+    flex-shrink: 0;
   }
-  #titlebar .dot { width: 11px; height: 11px; border-radius: 50%; }
+  #titlebar .dot { width: 11px; height: 11px; border-radius: 50%; border: none; padding: 0; cursor: pointer; }
   #titlebar .dot.r { background: #ff5f56; }
   #titlebar .dot.y { background: #ffbd2e; }
   #titlebar .dot.g { background: #27c93f; }
   #titlebar .name { margin-left: 6px; }
   #titlebar .status { margin-left: auto; }
-  #restart {
+  #titlebar .win-btn {
     margin-left: 12px;
     background: #21262d;
     border: 1px solid #30363d;
@@ -69,8 +81,16 @@
     border-radius: 4px;
     cursor: pointer;
   }
-  #restart:hover { background: #30363d; }
-  #terminal { padding: 8px; }
+  #titlebar .win-btn:hover { background: #30363d; }
+  #terminal {
+    padding: 8px;
+    flex: 1;
+    min-height: 0;
+  }
+  #wrap:fullscreen #terminal,
+  #wrap:-webkit-full-screen #terminal {
+    display: block;
+  }
   footer {
     max-width: 900px;
     width: 100%;
@@ -94,10 +114,13 @@
 
 <div id="wrap">
   <div id="titlebar">
-    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <button class="dot r" id="dot-restart" title="Restart the VM"></button>
+    <button class="dot y" id="dot-minimize" title="Minimize"></button>
+    <button class="dot g" id="dot-fullscreen" title="Toggle fullscreen"></button>
     <span class="name" id="username-label">guest@browser-linux</span>
     <span class="status" id="status">booting&hellip;</span>
-    <button id="restart" title="Reboot the virtual machine">Restart</button>
+    <button class="win-btn" id="fullscreen-btn" title="Toggle fullscreen focus mode">⛶ Fullscreen</button>
+    <button class="win-btn" id="restart" title="Reboot the virtual machine">Restart</button>
   </div>
   <div id="terminal"></div>
 </div>
@@ -174,12 +197,55 @@ function bootVM() {
   });
 }
 
-document.getElementById("restart").addEventListener("click", function () {
+function restartVM() {
   if (emulator) {
     emulator.stop();
     emulator.destroy();
   }
   bootVM();
+}
+
+document.getElementById("restart").addEventListener("click", restartVM);
+document.getElementById("dot-restart").addEventListener("click", restartVM);
+
+/* ==========================================================================
+   Fullscreen focus mode + minimize
+   ========================================================================== */
+var wrapEl = document.getElementById("wrap");
+var fullscreenBtn = document.getElementById("fullscreen-btn");
+
+function isFullscreen() {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement);
+}
+
+function toggleFullscreen() {
+  if (!isFullscreen()) {
+    var request = wrapEl.requestFullscreen || wrapEl.webkitRequestFullscreen;
+    if (request) request.call(wrapEl);
+  } else {
+    var exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) exit.call(document);
+  }
+}
+
+function onFullscreenChange() {
+  var active = isFullscreen();
+  fullscreenBtn.textContent = active ? "🗗 Exit Fullscreen" : "⛶ Fullscreen";
+  // Give the browser a moment to finish resizing the element before we
+  // recompute the terminal's rows/cols to match its new pixel size.
+  setTimeout(function () { fitAddon.fit(); }, 100);
+}
+
+document.addEventListener("fullscreenchange", onFullscreenChange);
+document.addEventListener("webkitfullscreenchange", onFullscreenChange);
+fullscreenBtn.addEventListener("click", toggleFullscreen);
+document.getElementById("dot-fullscreen").addEventListener("click", toggleFullscreen);
+
+document.getElementById("dot-minimize").addEventListener("click", function () {
+  wrapEl.classList.toggle("minimized");
+  if (!wrapEl.classList.contains("minimized")) {
+    setTimeout(function () { fitAddon.fit(); }, 50);
+  }
 });
 
 bootVM();
