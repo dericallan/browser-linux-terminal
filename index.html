@@ -107,8 +107,8 @@
 <header>
   <h1>Browser Linux Terminal</h1>
   <p class="sub">
-    A real Linux kernel + BusyBox, booted with <a href="https://github.com/copy/v86" style="color:#58a6ff">v86</a> (x86 emulated via WebAssembly) and running entirely inside this tab.
-    Nothing is sent to a server &mdash; it's a fixed, limited BusyBox environment with no networking and no persistence.
+    A real Alpine Linux, booted with <a href="https://github.com/copy/v86" style="color:#58a6ff">v86</a> (x86 emulated via WebAssembly) and running entirely inside this tab.
+    Nothing is sent to a server &mdash; standard Alpine utilities and the apk package manager are available, but there's no network access and state resets on restart.
   </p>
 </header>
 
@@ -126,7 +126,7 @@
 </div>
 
 <footer>
-  Limited environment: BusyBox shell only, no package manager, no network devices, state resets on restart.
+  Alpine Linux environment: apk package manager and standard utilities available, no network devices, state resets on restart.
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
@@ -163,12 +163,15 @@ function bootVM() {
 
   emulator = new V86({
     wasm_path: "vendor/v86.wasm",
-    memory_size: 128 * 1024 * 1024,
+    memory_size: 256 * 1024 * 1024,
     bios: { url: "bios/seabios.bin" },
     vga_bios: { url: "bios/vgabios.bin" },
-    bzimage: { url: "images/buildroot-bzimage68.bin" },
-    filesystem: {},
-    cmdline: "tsc=reliable mitigations=off random.trust_cpu=on",
+    filesystem: {
+      baseurl: "images/alpine-rootfs-flat",
+      basefs: "images/alpine-fs.json",
+    },
+    bzimage_initrd_from_filesystem: true,
+    cmdline: "rw root=host9p rootfstype=9p rootflags=trans=virtio,cache=loose modules=virtio_pci tsc=reliable",
     autostart: true,
     disable_keyboard: true,
   });
@@ -181,7 +184,7 @@ function bootVM() {
 
     if (!promptFixed) {
       recentOutput = (recentOutput + String.fromCharCode(byte)).slice(-16);
-      if (recentOutput.indexOf("~% ") !== -1) {
+      if (recentOutput.indexOf("~# ") !== -1) {
         promptFixed = true;
         emulator.serial0_send("export PS1='$ ' && clear\n");
       }
