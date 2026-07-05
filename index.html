@@ -172,6 +172,11 @@ function bootVM() {
     },
     bzimage_initrd_from_filesystem: true,
     cmdline: "rw root=host9p rootfstype=9p rootflags=trans=virtio,cache=loose modules=virtio_pci tsc=reliable",
+    // Boots from a pre-baked snapshot (already past the Alpine/openrc boot
+    // sequence) instead of live-booting through hundreds of small on-demand
+    // 9p filesystem fetches every time — that live-boot path turned out to
+    // hang intermittently on real (non-localhost) network conditions.
+    initial_state: { url: "images/alpine-state.bin.zst" },
     autostart: true,
     disable_keyboard: true,
   });
@@ -193,6 +198,13 @@ function bootVM() {
 
   emulator.add_listener("emulator-ready", function () {
     statusEl.textContent = "running";
+    // The restored snapshot already printed its prompt before being saved,
+    // so nothing new appears in this fresh terminal until the guest is
+    // nudged — a blank Enter makes it reprint the prompt, which the
+    // listener above detects and swaps for our custom bare "$ " prompt.
+    setTimeout(function () {
+      emulator.serial0_send("\n");
+    }, 200);
   });
 
   term.onData(function (data) {
