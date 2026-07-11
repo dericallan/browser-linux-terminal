@@ -118,7 +118,8 @@
   <h1>Browser Linux Terminal</h1>
   <p class="sub">
     A real Alpine Linux, booted with <a href="https://github.com/copy/v86" style="color:#58a6ff">v86</a> (x86 emulated via WebAssembly) and running entirely inside this tab.
-    Nothing is sent to a server &mdash; standard Alpine utilities and the apk package manager are available, but there's no network access and state resets on restart.
+    Nothing is sent to a server &mdash; standard Alpine utilities and the apk package manager are available, but there's no network access.
+    Your work is saved automatically in this browser and restored next time you open this terminal; the Restart button intentionally wipes it and starts fresh.
   </p>
 </header>
 
@@ -137,7 +138,7 @@
 </div>
 
 <footer>
-  Alpine Linux environment: apk package manager and standard utilities available, no network devices, state resets on restart.
+  Alpine Linux environment: apk package manager and standard utilities available, no network devices. Progress auto-saves to this browser; Restart wipes it.
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
@@ -180,6 +181,94 @@ fitAddon.fit();
 window.addEventListener("resize", function () { fitAddon.fit(); });
 
 var emulator = null;
+
+/* ==========================================================================
+   Persistence: full VM state is saved to this browser's IndexedDB (state
+   snapshots run tens of MB, too big for localStorage) and restored the next
+   time this same username opens a terminal here. This is per-browser, not
+   cross-device — it fixes "closing/reopening the tab loses my work", not
+   syncing across machines. The Restart button is treated as an intentional
+   reset and clears the saved state instead of restoring it.
+   ========================================================================== */
+var STATE_DB_NAME = "jll-terminal-state";
+var STATE_STORE_NAME = "states";
+var SAVE_INTERVAL_MS = 30000;
+var stateDbPromise = null;
+
+function openStateDB() {
+  if (!stateDbPromise) {
+    stateDbPromise = new Promise(function (resolve, reject) {
+      var req = indexedDB.open(STATE_DB_NAME, 1);
+      req.onupgradeneeded = function () {
+        req.result.createObjectStore(STATE_STORE_NAME, { keyPath: "username" });
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+  return stateDbPromise;
+}
+
+function loadSavedState(user) {
+  return openStateDB().then(function (db) {
+    return new Promise(function (resolve) {
+      var tx = db.transaction(STATE_STORE_NAME, "readonly");
+      var req = tx.objectStore(STATE_STORE_NAME).get(user);
+      req.onsuccess = function () { resolve(req.result ? req.result.state : null); };
+      req.onerror = function () { resolve(null); };
+    });
+  }).catch(function () { return null; });
+}
+
+function saveStateNow(user, state) {
+  return openStateDB().then(function (db) {
+    return new Promise(function (resolve) {
+      var tx = db.transaction(STATE_STORE_NAME, "readwrite");
+      tx.objectStore(STATE_STORE_NAME).put({ username: user, state: state, savedAt: Date.now() });
+      tx.oncomplete = function () { resolve(true); };
+      tx.onerror = function () { resolve(false); };
+    });
+  }).catch(function () { return false; });
+}
+
+function clearSavedState(user) {
+  return openStateDB().then(function (db) {
+    return new Promise(function (resolve) {
+      var tx = db.transaction(STATE_STORE_NAME, "readwrite");
+      tx.objectStore(STATE_STORE_NAME).delete(user);
+      tx.oncomplete = function () { resolve(); };
+      tx.onerror = function () { resolve(); };
+    });
+  }).catch(function () {});
+}
+
+var saveIntervalHandle = null;
+
+function persistState() {
+  if (!emulator) return;
+  emulator.save_state().then(function (state) {
+    return saveStateNow(username, state);
+  }).catch(function (err) {
+    console.warn("[Junior Linux Lab] Could not save terminal state:", err);
+  });
+}
+
+function startAutoSave() {
+  stopAutoSave();
+  saveIntervalHandle = setInterval(persistState, SAVE_INTERVAL_MS);
+}
+
+function stopAutoSave() {
+  if (saveIntervalHandle) {
+    clearInterval(saveIntervalHandle);
+    saveIntervalHandle = null;
+  }
+}
+
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState === "hidden") persistState();
+});
+window.addEventListener("pagehide", persistState);
 
 /* ==========================================================================
    Live mirroring (mentor "watch" mode) over WebRTC via PeerJS.
@@ -286,9 +375,10 @@ function bootAsViewer(targetUsername) {
   return viewerPeer;
 }
 
-function bootVM() {
+function bootVM(fresh) {
   term.reset();
   statusEl.textContent = "booting…";
+  stopAutoSave();
 
   emulator = new V86({
     wasm_path: "vendor/v86.wasm",
@@ -326,15 +416,38 @@ function bootVM() {
     }
   });
 
-  emulator.add_listener("emulator-ready", function () {
+  function finishBoot() {
     statusEl.textContent = "running";
-    // The restored snapshot already printed its prompt before being saved,
-    // so nothing new appears in this fresh terminal until the guest is
+    // Neither a fresh boot nor a restored snapshot re-sends its last screen
+    // to this new xterm instance, so nothing appears until the guest is
     // nudged — a blank Enter makes it reprint the prompt, which the
-    // listener above detects and swaps for our custom bare "$ " prompt.
+    // listener above detects and swaps for our custom bare "$ " prompt
+    // (skipped after a restore, since PS1 was already fixed before saving).
     setTimeout(function () {
       emulator.serial0_send("\n");
     }, 200);
+    startAutoSave();
+    // An early save shortly after boot means even a quick visit is
+    // recoverable, without waiting for the first 30s auto-save tick.
+    setTimeout(persistState, 3000);
+  }
+
+  emulator.add_listener("emulator-ready", function () {
+    if (fresh) {
+      finishBoot();
+      return;
+    }
+    loadSavedState(username).then(function (saved) {
+      if (!saved) return;
+      return emulator.restore_state(saved).then(function () {
+        promptFixed = true;
+        term.write("\r\n[Restored your saved session]\r\n");
+      });
+    }).catch(function (err) {
+      console.warn("[Junior Linux Lab] Could not restore saved state, booting fresh:", err);
+    }).then(function () {
+      finishBoot();
+    });
   });
 
   term.onData(function (data) {
@@ -350,11 +463,17 @@ function restartVM() {
     viewerPeerInstance = bootAsViewer(watchTarget);
     return;
   }
-  if (emulator) {
-    emulator.stop();
-    emulator.destroy();
+  if (!window.confirm("This will erase your saved progress in this terminal and start fresh. Continue?")) {
+    return;
   }
-  bootVM();
+  stopAutoSave();
+  clearSavedState(username).then(function () {
+    if (emulator) {
+      emulator.stop();
+      emulator.destroy();
+    }
+    bootVM(true);
+  });
 }
 
 document.getElementById("restart").addEventListener("click", restartVM);
@@ -403,7 +522,7 @@ document.getElementById("dot-minimize").addEventListener("click", function () {
 if (watchTarget) {
   viewerPeerInstance = bootAsViewer(watchTarget);
 } else {
-  bootVM();
+  bootVM(false);
   if (isWatchable) setupHostPeer();
 }
 </script>
