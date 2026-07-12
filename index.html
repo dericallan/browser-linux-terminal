@@ -116,7 +116,7 @@
 
 <header>
   <h1>Browser Linux Terminal</h1>
-  <p class="sub">
+  <p class="sub" id="sub-text">
     A real Alpine Linux, booted with <a href="https://github.com/copy/v86" style="color:#58a6ff">v86</a> (x86 emulated via WebAssembly) and running entirely inside this tab.
     Nothing is sent to a server &mdash; standard Alpine utilities and the apk package manager are available, but there's no network access.
     Your work is saved automatically in this browser and restored next time you open this terminal; the Restart button intentionally wipes it and starts fresh.
@@ -137,7 +137,7 @@
   <div id="terminal"></div>
 </div>
 
-<footer>
+<footer id="footer-text">
   Alpine Linux environment: apk package manager and standard utilities available, no network devices. Progress auto-saves to this browser; Restart wipes it.
 </footer>
 
@@ -165,6 +165,12 @@ document.getElementById("username-label").textContent = username + "@terminal";
 var isWatchable = new URLSearchParams(window.location.search).get("watchable") === "1";
 var watchTarget = new URLSearchParams(window.location.search).get("watch");
 watchTarget = watchTarget ? watchTarget.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 24) : null;
+
+// ?disableReset=1 — used for student sessions so work can't be manually
+// wiped; the embedding page (student dashboard) is the one deciding this,
+// not a setting a student could remove from their own URL bar and regain,
+// since the dashboard always rebuilds this URL itself.
+var disableReset = new URLSearchParams(window.location.search).get("disableReset") === "1";
 
 var statusEl = document.getElementById("status");
 var watchBadgeEl = document.getElementById("watch-badge");
@@ -220,6 +226,19 @@ function loadSavedState(user) {
   }).catch(function () { return null; });
 }
 
+// Cheap check used by the cross-device sync handshake below — reads just
+// the timestamp, not the (tens-of-MB) state blob itself.
+function loadSavedStateMeta(user) {
+  return openStateDB().then(function (db) {
+    return new Promise(function (resolve) {
+      var tx = db.transaction(STATE_STORE_NAME, "readonly");
+      var req = tx.objectStore(STATE_STORE_NAME).get(user);
+      req.onsuccess = function () { resolve(req.result ? req.result.savedAt : 0); };
+      req.onerror = function () { resolve(0); };
+    });
+  }).catch(function () { return 0; });
+}
+
 function saveStateNow(user, state) {
   return openStateDB().then(function (db) {
     return new Promise(function (resolve) {
@@ -269,6 +288,41 @@ document.addEventListener("visibilitychange", function () {
   if (document.visibilityState === "hidden") persistState();
 });
 window.addEventListener("pagehide", persistState);
+
+/* ==========================================================================
+   Cross-device sync handshake with the embedding page (student dashboard).
+   This page only knows the local IndexedDB copy above; it has no Firebase
+   session of its own (different origin). The parent page — which IS signed
+   into Firebase — asks for this tab's state and pushes down whatever the
+   cloud has, using postMessage as the bridge. Every message is validated
+   against event.source so only the actual parent frame can drive this.
+   ========================================================================== */
+window.addEventListener("message", function (event) {
+  if (!window.parent || event.source !== window.parent) return;
+  var msg = event.data;
+  if (!msg || typeof msg !== "object") return;
+
+  if (msg.type === "jll-get-state-meta") {
+    loadSavedStateMeta(username).then(function (savedAt) {
+      window.parent.postMessage({ type: "jll-state-meta", savedAt: savedAt }, "*");
+    });
+  } else if (msg.type === "jll-get-state") {
+    if (!emulator) return;
+    emulator.save_state().then(function (state) {
+      var savedAt = Date.now();
+      saveStateNow(username, state);
+      window.parent.postMessage({ type: "jll-state", state: state, savedAt: savedAt }, "*");
+    });
+  } else if (msg.type === "jll-set-state") {
+    if (!emulator || !msg.state) return;
+    emulator.restore_state(msg.state).then(function () {
+      saveStateNow(username, msg.state);
+      term.write("\r\n[Synced your saved session from another device]\r\n");
+    }).catch(function (err) {
+      console.warn("[Junior Linux Lab] Could not apply synced state:", err);
+    });
+  }
+});
 
 /* ==========================================================================
    Live mirroring (mentor "watch" mode) over WebRTC via PeerJS.
@@ -430,6 +484,11 @@ function bootVM(fresh) {
     // An early save shortly after boot means even a quick visit is
     // recoverable, without waiting for the first 30s auto-save tick.
     setTimeout(persistState, 3000);
+    // Tells the embedding page it's safe to run its cross-device sync
+    // handshake now — nothing to announce if there's no parent frame.
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: "jll-boot-complete" }, "*");
+    }
   }
 
   emulator.add_listener("emulator-ready", function () {
@@ -476,8 +535,21 @@ function restartVM() {
   });
 }
 
-document.getElementById("restart").addEventListener("click", restartVM);
-document.getElementById("dot-restart").addEventListener("click", restartVM);
+if (disableReset && !watchTarget) {
+  // Students can't manually wipe their own saved progress — everything is
+  // auto-saved instead. The reset dot is left in place for the familiar
+  // traffic-light look but does nothing.
+  document.getElementById("restart").classList.add("hidden");
+  document.getElementById("dot-restart").title = "Your work auto-saves — there's no manual reset.";
+  document.getElementById("sub-text").innerHTML =
+    'A real Alpine Linux, booted with <a href="https://github.com/copy/v86" style="color:#58a6ff">v86</a> (x86 emulated via WebAssembly) and running entirely inside this tab. ' +
+    "Nothing is sent to a server except your saved progress, which syncs to your account so it follows you across devices.";
+  document.getElementById("footer-text").textContent =
+    "Alpine Linux environment: apk package manager and standard utilities available, no network devices. Your work auto-saves and syncs across devices.";
+} else {
+  document.getElementById("restart").addEventListener("click", restartVM);
+  document.getElementById("dot-restart").addEventListener("click", restartVM);
+}
 
 /* ==========================================================================
    Fullscreen focus mode + minimize
