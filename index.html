@@ -456,6 +456,7 @@ function bootVM(fresh) {
 
   var promptFixed = false;
   var recentOutput = "";
+  var bootFinished = false;
 
   emulator.add_listener("serial0-output-byte", function (byte) {
     term.write(new Uint8Array([byte]));
@@ -471,6 +472,8 @@ function bootVM(fresh) {
   });
 
   function finishBoot() {
+    if (bootFinished) return;
+    bootFinished = true;
     statusEl.textContent = "running";
     // Neither a fresh boot nor a restored snapshot re-sends its last screen
     // to this new xterm instance, so nothing appears until the guest is
