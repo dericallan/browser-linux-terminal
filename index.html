@@ -187,6 +187,14 @@ fitAddon.fit();
 window.addEventListener("resize", function () { fitAddon.fit(); });
 
 var emulator = null;
+// term persists across restarts (it's the one xterm.js UI instance for this
+// page), but bootVM() runs again on every restart and used to attach a new
+// term.onData listener each time without removing the old one — every
+// keystroke after a restart got sent to the VM once per accumulated
+// listener, producing doubled (tripled, ...) characters. Tracking the
+// disposable lets each bootVM() call clean up its predecessor's listener
+// first.
+var termDataDisposable = null;
 
 /* ==========================================================================
    Persistence: full VM state is saved to this browser's IndexedDB (state
@@ -422,7 +430,8 @@ function bootAsViewer(targetUsername) {
     );
   });
 
-  term.onData(function (data) {
+  if (termDataDisposable) termDataDisposable.dispose();
+  termDataDisposable = term.onData(function (data) {
     if (conn && conn.open) conn.send(data);
   });
 
@@ -512,7 +521,8 @@ function bootVM(fresh) {
     });
   });
 
-  term.onData(function (data) {
+  if (termDataDisposable) termDataDisposable.dispose();
+  termDataDisposable = term.onData(function (data) {
     emulator.serial0_send(data);
   });
 }
