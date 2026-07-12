@@ -186,6 +186,32 @@ term.open(document.getElementById("terminal"));
 fitAddon.fit();
 window.addEventListener("resize", function () { fitAddon.fit(); });
 
+/* ==========================================================================
+   Mouse UX: double-click already selects a word (xterm.js default) — this
+   copies that selection (or any other mouse selection) to the clipboard
+   automatically. Right-click pastes from the clipboard instead of showing
+   the browser's own context menu. term.paste() feeds pasted text through
+   the same path as typed input, so this works identically whether typing
+   into a live VM or into a watch-mode viewer mirroring someone else's.
+   ========================================================================== */
+term.onSelectionChange(function () {
+  var selection = term.getSelection();
+  if (selection) {
+    navigator.clipboard.writeText(selection).catch(function (err) {
+      console.warn("[Junior Linux Lab] Could not copy selection:", err);
+    });
+  }
+});
+
+document.getElementById("terminal").addEventListener("contextmenu", function (e) {
+  e.preventDefault();
+  navigator.clipboard.readText().then(function (text) {
+    if (text) term.paste(text);
+  }).catch(function (err) {
+    console.warn("[Junior Linux Lab] Could not paste from clipboard:", err);
+  });
+});
+
 var emulator = null;
 // term persists across restarts (it's the one xterm.js UI instance for this
 // page), but bootVM() runs again on every restart and used to attach a new
