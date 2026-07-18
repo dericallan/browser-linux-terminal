@@ -96,6 +96,15 @@
     flex: 1;
     min-height: 0;
   }
+  /* xterm.js's viewport always sets overflow-y:scroll, which reserves a
+     visible scrollbar track even with scrollback:0 (no content to scroll).
+     Hidden here since scrolling is disabled outright, not just usually-empty. */
+  #terminal .xterm-viewport {
+    scrollbar-width: none;
+  }
+  #terminal .xterm-viewport::-webkit-scrollbar {
+    display: none;
+  }
   #wrap:fullscreen #terminal,
   #wrap:-webkit-full-screen #terminal {
     display: block;
@@ -179,6 +188,12 @@ var term = new Terminal({
   fontSize: 14,
   fontFamily: "Menlo, Consolas, monospace",
   theme: { background: "#010409", foreground: "#c9d1d9" },
+  // Scrollback disabled: BusyBox vi doesn't use the alternate screen buffer,
+  // so a stray mouse-wheel scroll shows stale terminal history instead of
+  // vi's live redraw, and students can't tell why their keystrokes stopped
+  // "working". With no scrollback the wheel is a no-op and the view always
+  // matches what the guest is actually drawing.
+  scrollback: 0,
 });
 var fitAddon = new FitAddon.FitAddon();
 term.loadAddon(fitAddon);
